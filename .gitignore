@@ -138,3 +138,6 @@ Temporary Items
 # End of https://www.gitignore.io/api/osx
 
 \.vscode/settings\.json
+
+\.pyre/
+.pyre_configuration
