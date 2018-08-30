@@ -1,0 +1,7 @@
+{
+  "binary": "/home/samu/miniconda2/envs/torchCRF/bin/pyre.bin",
+  "source_directories": [
+    "."
+  ],
+  "typeshed": "/home/samu/miniconda2/envs/torchCRF/lib/pyre_check/typeshed/"
+}
