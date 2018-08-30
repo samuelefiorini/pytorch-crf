@@ -22,6 +22,8 @@ class CRF(nn.Module):
     ----------
     num_tags : int
         Number of tags passed to ``__init__``.
+    num_features : int
+        Number of input features passed to ``__init__``.
     start_transitions : :class:`~torch.nn.Parameter`
         Start transition score tensor of size ``(num_tags,)``.
     end_transitions : :class:`~torch.nn.Parameter`
@@ -38,21 +40,23 @@ class CRF(nn.Module):
 
     .. _Viterbi algorithm: https://en.wikipedia.org/wiki/Viterbi_algorithm
     """
-    def __init__(self, num_tags: int) -> None:
+    def __init__(self, num_tags: int, num_features: int) -> None:
         if num_tags <= 0:
             raise ValueError(f'invalid number of tags: {num_tags}')
         super().__init__()
         self.num_tags = num_tags
+        self.num_features = num_features
         self.start_transitions = nn.Parameter(torch.Tensor(num_tags))
         self.end_transitions = nn.Parameter(torch.Tensor(num_tags))
         self.transitions = nn.Parameter(torch.Tensor(num_tags, num_tags))
+        self.linear = nn.Linear(self.num_features, self.num_tags)
 
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
         """Initialize the transition parameters.
 
-        The parameters will be initialized randomly from a uniform distribution
+        The transition parameters will be initialized randomly from a uniform distribution
         between -0.1 and 0.1.
         """
         nn.init.uniform_(self.start_transitions, -0.1, 0.1)
@@ -60,10 +64,25 @@ class CRF(nn.Module):
         nn.init.uniform_(self.transitions, -0.1, 0.1)
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}(num_tags={self.num_tags})'
+        return f'{self.__class__.__name__}(num_tags={self.num_tags}, num_features={self.num_features})'
+
+    def compute_emissions(self, inputs: Variable) -> Variable:
+        """Compute emissions probabilities.
+
+        Arguments
+        ---------
+        inputs : :class:`~torch.Tensor`
+            Inputs of size ``(seq_length, batch_size, n_features)``.
+        
+        Returns
+        -------
+        emissions : :class:`~torch.autograd.Variable`
+                Emission score tensor of size ``(seq_length, batch_size, num_tags)``.
+        """
+        return torch.tanh(self.linear(inputs))
 
     def forward(self,
-                emissions: Variable,
+                inputs: Variable,
                 tags: Variable,
                 mask: Optional[Variable] = None,
                 reduce: bool = True,
@@ -72,8 +91,8 @@ class CRF(nn.Module):
 
         Arguments
         ---------
-        emissions : :class:`~torch.autograd.Variable`
-            Emission score tensor of size ``(seq_length, batch_size, num_tags)``.
+        inputs : :class:`~torch.Tensor`
+            Inputs of size ``(seq_length, batch_size, n_features)``.
         tags : :class:`~torch.autograd.Variable`
             Sequence of tags as ``LongTensor`` of size ``(seq_length, batch_size)``.
         mask : :class:`~torch.autograd.Variable`, optional
@@ -84,22 +103,17 @@ class CRF(nn.Module):
         Returns
         -------
         :class:`~torch.autograd.Variable`
-            The log likelihood. This will have size (1,) if ``reduce=True``, ``(batch_size,)``
+            The negative log likelihood. This will have size (1,) if ``reduce=True``, ``(batch_size,)``
             otherwise.
         """
-        if emissions.dim() != 3:
-            raise ValueError(f'emissions must have dimension of 3, got {emissions.dim()}')
+        if inputs.dim() != 3:
+            raise ValueError(f'inputs must have dimension of 3, got {inputs.dim()}')
         if tags.dim() != 2:
             raise ValueError(f'tags must have dimension of 2, got {tags.dim()}')
-        if emissions.size()[:2] != tags.size():
+        if inputs.size()[:2] != tags.size():
             raise ValueError(
                 'the first two dimensions of emissions and tags must match, '
                 f'got {tuple(emissions.size()[:2])} and {tuple(tags.size())}'
-            )
-        if emissions.size(2) != self.num_tags:
-            raise ValueError(
-                f'expected last dimension of emissions is {self.num_tags}, '
-                f'got {emissions.size(2)}'
             )
         if mask is not None:
             if tags.size() != mask.size():
@@ -110,13 +124,22 @@ class CRF(nn.Module):
             if not all(mask[0].data):
                 raise ValueError('mask of the first timestep must all be on')
 
+        # Compute emissions
+        # self.num_features = inputs.size()[-1]
+        emissions = self.compute_emissions(inputs)
+        # if emissions.size(2) != self.num_tags:
+        #     raise ValueError(
+        #         f'expected last dimension of emissions is {self.num_tags}, '
+        #         f'got {emissions.size(2)}'
+        #     )
+
         if mask is None:
             mask = Variable(self._new(tags.size()).fill_(1)).byte()
 
         numerator = self._compute_joint_llh(emissions, tags, mask)
         denominator = self._compute_log_partition_function(emissions, mask)
-        llh = numerator - denominator
-        return llh if not reduce else torch.sum(llh)
+        nllh = - (numerator - denominator)
+        return nllh.mean() if not reduce else torch.sum(nllh)
 
     def decode(self,
                emissions: Union[Variable, torch.FloatTensor],
